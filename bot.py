@@ -1,33 +1,24 @@
 import os
 import json
 import random
-import asyncio
 import sqlite3
+import threading
 from datetime import datetime
 
+import telebot
+from telebot import types
 from aiohttp import web
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.filters import Command, CommandStart
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
 # ========== 配置 ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")  # 例如 https://your-app.onrender.com
 PORT = int(os.getenv("PORT", 8080))
-WEBHOOK_PATH = "/webhook"
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-router = Router()
-dp.include_router(router)
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========== 数据库 ==========
 DB_PATH = "bot.db"
 
+# ========== 数据库 ==========
 def db_init():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -87,28 +78,28 @@ def create_withdraw(user_id, amount):
 
 # ========== 键盘 ==========
 def main_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎰 Казино", callback_data="casino")],
-        [InlineKeyboardButton(text="📦 Кейсы", callback_data="cases")],
-        [InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
-        [InlineKeyboardButton(text="⭐ Вывод звёзд", callback_data="withdraw")],
-        [InlineKeyboardButton(text="💰 Баланс", callback_data="balance")],
-    ])
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🎰 Казино", callback_data="casino"))
+    kb.add(types.InlineKeyboardButton("📦 Кейсы", callback_data="cases"))
+    kb.add(types.InlineKeyboardButton("🎒 Инвентарь", callback_data="inventory"))
+    kb.add(types.InlineKeyboardButton("⭐ Вывод звёзд", callback_data="withdraw"))
+    kb.add(types.InlineKeyboardButton("💰 Баланс", callback_data="balance"))
+    return kb
 
 def casino_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="x2 (шанс 48%)", callback_data="bet_2")],
-        [InlineKeyboardButton(text="x3 (шанс 32%)", callback_data="bet_3")],
-        [InlineKeyboardButton(text="x4 (шанс 24%)", callback_data="bet_4")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back")],
-    ])
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("x2 (шанс 48%)", callback_data="bet_2"))
+    kb.add(types.InlineKeyboardButton("x3 (шанс 32%)", callback_data="bet_3"))
+    kb.add(types.InlineKeyboardButton("x4 (шанс 24%)", callback_data="bet_4"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+    return kb
 
 def cases_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Обычный кейс (100)", callback_data="open_common")],
-        [InlineKeyboardButton(text="Редкий кейс (500)", callback_data="open_rare")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back")],
-    ])
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("Обычный кейс (100)", callback_data="open_common"))
+    kb.add(types.InlineKeyboardButton("Редкий кейс (500)", callback_data="open_rare"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+    return kb
 
 # ========== 游戏逻辑 ==========
 CASE_ITEMS = {
@@ -140,50 +131,53 @@ def roll_case(case_type):
     return items[-1]["name"]
 
 # ========== 处理器 ==========
-@router.message(CommandStart())
-async def cmd_start(message: Message):
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
     db_init()
     get_user(message.from_user.id)
-    await message.answer(
+    bot.send_message(
+        message.chat.id,
         f"Привет, {message.from_user.full_name}!\n\n"
         f"🎮 Добро пожаловать в игровой бот.\n"
         f"Нажми кнопку ниже, чтобы начать.",
         reply_markup=main_kb()
     )
 
-@router.callback_query(F.data == "back")
-async def cb_back(call: CallbackQuery):
-    await call.message.edit_text("Главное меню:", reply_markup=main_kb())
-    await call.answer()
+@bot.callback_query_handler(func=lambda call: call.data == "back")
+def cb_back(call):
+    bot.edit_message_text("Главное меню:", call.message.chat.id, call.message.message_id, reply_markup=main_kb())
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data == "balance")
-async def cb_balance(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data == "balance")
+def cb_balance(call):
     user = get_user(call.from_user.id)
-    await call.message.edit_text(
+    bot.edit_message_text(
         f"💰 Баланс: <b>{user['balance']}</b> звёзд\n\n"
         f"🎒 Предметов в инвентаре: {sum(user['inventory'].values())}",
-        reply_markup=main_kb()
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=main_kb()
     )
-    await call.answer()
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data == "casino")
-async def cb_casino(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data == "casino")
+def cb_casino(call):
     user = get_user(call.from_user.id)
-    await call.message.edit_text(
+    bot.edit_message_text(
         f"🎰 Казино\n\n"
         f"Твой баланс: <b>{user['balance']}</b>\n"
         f"Выбери множитель (ставка = 100):",
-        reply_markup=casino_kb()
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=casino_kb()
     )
-    await call.answer()
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data.startswith("bet_"))
-async def cb_bet(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("bet_"))
+def cb_bet(call):
     mult = int(call.data.split("_")[1])
     user = get_user(call.from_user.id)
     bet = 100
     if user["balance"] < bet:
-        await call.answer("Недостаточно звёзд!", show_alert=True)
+        bot.answer_callback_query(call.id, "Недостаточно звёзд!", show_alert=True)
         return
 
     chances = {2: 0.48, 3: 0.32, 4: 0.24}
@@ -191,35 +185,37 @@ async def cb_bet(call: CallbackQuery):
 
     if random.random() < win_chance:
         win = bet * mult
-        update_balance(call.from_user.id, win - bet)  # 净赢 win - bet
+        update_balance(call.from_user.id, win - bet)
         result = f"🎉 Победа! Ты выиграл <b>{win}</b> звёзд (x{mult})"
     else:
         update_balance(call.from_user.id, -bet)
         result = f"😢 Проигрыш. Потеряно <b>{bet}</b> звёзд."
 
     user = get_user(call.from_user.id)
-    await call.message.edit_text(
+    bot.edit_message_text(
         f"{result}\n\n💰 Новый баланс: <b>{user['balance']}</b>",
-        reply_markup=casino_kb()
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=casino_kb()
     )
-    await call.answer()
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data == "cases")
-async def cb_cases(call: CallbackQuery):
-    await call.message.edit_text(
+@bot.callback_query_handler(func=lambda call: call.data == "cases")
+def cb_cases(call):
+    bot.edit_message_text(
         "📦 Выбери кейс:",
+        call.message.chat.id, call.message.message_id,
         reply_markup=cases_kb()
     )
-    await call.answer()
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data.startswith("open_"))
-async def cb_open_case(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("open_"))
+def cb_open_case(call):
     case_type = call.data.replace("open_", "")
     price = CASE_PRICE[case_type]
     user = get_user(call.from_user.id)
 
     if user["balance"] < price:
-        await call.answer("Недостаточно звёзд!", show_alert=True)
+        bot.answer_callback_query(call.id, "Недостаточно звёзд!", show_alert=True)
         return
 
     update_balance(call.from_user.id, -price)
@@ -227,46 +223,47 @@ async def cb_open_case(call: CallbackQuery):
     update_inventory(call.from_user.id, item)
 
     user = get_user(call.from_user.id)
-    await call.message.edit_text(
+    bot.edit_message_text(
         f"📦 Ты открыл кейс и получил: <b>{item}</b>\n\n"
         f"💰 Баланс: <b>{user['balance']}</b>",
-        reply_markup=cases_kb()
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=cases_kb()
     )
-    await call.answer()
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data == "inventory")
-async def cb_inventory(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data == "inventory")
+def cb_inventory(call):
     user = get_user(call.from_user.id)
     if not user["inventory"]:
         text = "🎒 Инвентарь пуст."
     else:
         lines = [f"• {item}: {qty} шт." for item, qty in user["inventory"].items()]
         text = "🎒 Твой инвентарь:\n\n" + "\n".join(lines)
-    await call.message.edit_text(text, reply_markup=main_kb())
-    await call.answer()
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_kb())
+    bot.answer_callback_query(call.id)
 
-@router.callback_query(F.data == "withdraw")
-async def cb_withdraw(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data == "withdraw")
+def cb_withdraw(call):
     user = get_user(call.from_user.id)
     if user["balance"] < 100:
-        await call.answer("Минимум для вывода: 100 звёзд", show_alert=True)
+        bot.answer_callback_query(call.id, "Минимум для вывода: 100 звёзд", show_alert=True)
         return
 
     amount = user["balance"]
     update_balance(call.from_user.id, -amount)
     req_id = create_withdraw(call.from_user.id, amount)
 
-    await call.message.edit_text(
+    bot.edit_message_text(
         f"⭐ Заявка на вывод <b>{amount}</b> звёзд создана.\n"
         f"ID заявки: <code>{req_id}</code>\n"
         f"Админ рассмотрит её в ближайшее время.",
-        reply_markup=main_kb()
+        call.message.chat.id, call.message.message_id,
+        parse_mode="HTML", reply_markup=main_kb()
     )
 
-    # 通知管理员
     if ADMIN_ID:
         try:
-            await bot.send_message(
+            bot.send_message(
                 ADMIN_ID,
                 f"🔔 Новая заявка на вывод\n"
                 f"Пользователь: <a href='tg://user?id={call.from_user.id}'>{call.from_user.full_name}</a>\n"
@@ -274,20 +271,21 @@ async def cb_withdraw(call: CallbackQuery):
                 f"Сумма: <b>{amount}</b> звёзд\n"
                 f"ID заявки: <code>{req_id}</code>\n\n"
                 f"Подтвердить: /approve {req_id}\n"
-                f"Отклонить: /reject {req_id}"
+                f"Отклонить: /reject {req_id}",
+                parse_mode="HTML"
             )
         except Exception:
             pass
-    await call.answer("Заявка создана!")
+    bot.answer_callback_query(call.id, "Заявка создана!")
 
 # ========== 管理命令 ==========
-@router.message(Command("approve"))
-async def cmd_approve(message: Message):
+@bot.message_handler(commands=["approve"])
+def cmd_approve(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /approve <id>")
+        bot.send_message(message.chat.id, "Использование: /approve <id>")
         return
     req_id = int(args[1])
     conn = sqlite3.connect(DB_PATH)
@@ -295,15 +293,15 @@ async def cmd_approve(message: Message):
     c.execute("UPDATE withdraw_requests SET status='approved' WHERE id=? AND status='pending'", (req_id,))
     conn.commit()
     conn.close()
-    await message.answer(f"✅ Заявка {req_id} подтверждена.")
+    bot.send_message(message.chat.id, f"✅ Заявка {req_id} подтверждена.")
 
-@router.message(Command("reject"))
-async def cmd_reject(message: Message):
+@bot.message_handler(commands=["reject"])
+def cmd_reject(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /reject <id>")
+        bot.send_message(message.chat.id, "Использование: /reject <id>")
         return
     req_id = int(args[1])
     conn = sqlite3.connect(DB_PATH)
@@ -312,27 +310,25 @@ async def cmd_reject(message: Message):
     row = c.fetchone()
     if row:
         user_id, amount = row
-        update_balance(user_id, amount)  # 退还
+        update_balance(user_id, amount)
         c.execute("UPDATE withdraw_requests SET status='rejected' WHERE id=?", (req_id,))
         conn.commit()
     conn.close()
-    await message.answer(f"❌ Заявка {req_id} отклонена, звёзды возвращены.")
+    bot.send_message(message.chat.id, f"❌ Заявка {req_id} отклонена, звёзды возвращены.")
 
-# ========== Webhook 启动 ==========
-async def on_startup(bot: Bot):
-    await bot.set_webhook(f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
+# ========== HTTP-заглушка для Render ==========
+async def health(request):
+    return web.Response(text="OK")
 
-def main():
-    db_init()
-
+def run_http_server():
     app = web.Application()
-    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_handler.register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-
-    dp.startup.register(on_startup)
-
+    app.router.add_get("/", health)
     web.run_app(app, host="0.0.0.0", port=PORT)
 
+# ========== 启动 ==========
 if __name__ == "__main__":
-    main()
+    db_init()
+    # HTTP-сервер в отдельном потоке — чтобы Render видел открытый порт
+    threading.Thread(target=run_http_server, daemon=True).start()
+    # Бот в основном потоке
+    bot.infinity_polling(skip_pending=True)
