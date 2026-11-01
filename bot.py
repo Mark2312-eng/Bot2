@@ -325,10 +325,11 @@ def run_http_server():
     app.router.add_get("/", health)
     web.run_app(app, host="0.0.0.0", port=PORT)
 
-# ========== 启动 ==========
 if __name__ == "__main__":
     db_init()
-    # HTTP-сервер в отдельном потоке — чтобы Render видел открытый порт
-    threading.Thread(target=run_http_server, daemon=True).start()
-    # Бот в основном потоке
-    bot.infinity_polling(skip_pending=True)
+
+    # Бота запускаем в отдельном потоке (он не использует сигналы ОС напрямую)
+    threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
+
+    # HTTP-сервер запускаем в ГЛАВНОМ потоке (aiohttp требует главный поток для сигналов)
+    run_http_server()
